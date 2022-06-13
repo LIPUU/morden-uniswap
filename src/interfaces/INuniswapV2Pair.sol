@@ -23,4 +23,10 @@ interface INuniswapV2Pair {
         address,
         bytes calldata
     ) external;
+
+    function transferFrom(
+        address,
+        address,
+        uint256
+    ) external returns (bool);
 }

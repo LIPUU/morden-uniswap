@@ -4,7 +4,7 @@ import "solmate/tokens/ERC20.sol";
 import "./libraries/Math.sol";
 import "./libraries/UQ112x112.sol";
 import "./interfaces/INuniswapV2Callee.sol";
-
+import "forge-std/console.sol";
 interface IERC20{
     function balanceOf(address) external returns (uint256);
     function transfer(address to, uint256 amount) external;
@@ -68,7 +68,7 @@ contract NuniswapV2Pair is ERC20, Math {
     constructor() ERC20("NuniswapV2 pair","NUNIV2",18){}
 
     function initialize(address _token0,address _token1) public{
-        if (_token0!=address(0)||_token1!=address(0))
+        if (token0!=address(0)||token1!=address(0))
             revert AlreadyInitialized();
         token0=_token0;
         token1=_token1;
@@ -133,7 +133,7 @@ contract NuniswapV2Pair is ERC20, Math {
             );
         }
 
-        if (liquidity<=0) 
+        if (liquidity<=0)
             revert InsufficientLiquidityMinted();
 
         _mint(to,liquidity);
@@ -190,7 +190,7 @@ contract NuniswapV2Pair is ERC20, Math {
         // interface是一种abi约束.
         // 如果用户合约不实现该interface中的函数，pair合约无法对用户合约进行回调
         if (data.length>0){
-            INuniswapV2Callee(to).zuniswapV2Call(
+            INuniswapV2Callee(to).nuniswapV2Call(
                 msg.sender,
                 amount0Out,
                 amount1Out,
@@ -222,6 +222,16 @@ contract NuniswapV2Pair is ERC20, Math {
 
         _update(balance0,balance1,reserve0_,reserve1_);
         emit Swap(msg.sender,amount0Out,amount1Out,to);
+    }
+
+    function sync() public {
+        (uint112 reserve0_, uint112 reserve1_, ) = getReserves();
+        _update(
+            IERC20(token0).balanceOf(address(this)),
+            IERC20(token1).balanceOf(address(this)),
+            reserve0_,
+            reserve1_
+        );
     }
     
     

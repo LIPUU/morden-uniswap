@@ -18,7 +18,7 @@ contract TestUser {
         // 在一笔交易内完成给pair打流动性及mint LP-token
         ERC20(token0Address_).transfer(pairAddress_, amount0_);
         ERC20(token1Address_).transfer(pairAddress_, amount1_);
-        INuniswapV2Pair(pairAddress_).mint(address(this));
+        NuniswapV2Pair(pairAddress_).mint(address(this));
     }
 
     function removeLiquidity(address pairAddress_) public{
@@ -27,52 +27,7 @@ contract TestUser {
         // 把LP-token打回给pair合约
 
         // burn前，pair合约会检查自己收到的LP-token的数量
-        INuniswapV2Pair(pairAddress_).burn(address(this));
-    }
-}
-
-// 合约闪电贷用户
-contract Flashloaner {
-    error InsufficientFlashLoanAmount();
-    uint256 expectedLoanAmount;
-    
-    function flashloan(
-        address pairAddress,
-        uint256 amount0Out,
-        uint256 amount1Out,
-        address tokenAddress
-    ) public {
-        if (amount0Out > 0) {
-            expectedLoanAmount = amount0Out;
-        }
-        if (amount1Out > 0) {
-            expectedLoanAmount = amount1Out;
-        }
-
-        NuniswapV2Pair(pairAddress).swap(
-            amount0Out,
-            amount1Out,
-            address(this),
-            abi.encode(tokenAddress)
-        );
-    }
-
-    // pair.swap把相应数量的token打给本合约之后回调该函数
-    // 该函数在拿到币之后疯狂操作最后把借来的币+利息打回给pair
-    function NuniswapV2Call(
-        address sender,
-        uint256 amount0Out,
-        uint256 amount1Out,
-        bytes calldata data
-    ) public {
-        address tokenAddress = abi.decode(data,(address));
-        uint256 balance=ERC20(tokenAddress).balanceOf(address(this));
-        if ( balance < expectedLoanAmount )
-            revert InsufficientFlashLoanAmount();
-
-        // msg.sender是pair合约    
-        ERC20(tokenAddress).transfer(msg.sender,balance);
-        // 把balance打回给pair合约。balance的组成部分应该是手续费+借来的币的数量
+        NuniswapV2Pair(pairAddress_).burn(address(this));
     }
 }
 
@@ -127,6 +82,383 @@ contract NuniswapV2PairTest is Test {
         assertEq(expectedReserve1,reserve1,"unexpected reserve1");
     }
 
+    function assertCumulativePrices(
+        uint256 expectedPrice0,
+        uint256 expectedPrice1
+    ) internal {
+        assertEq(
+            pair.price0CumulativeLast(),
+            expectedPrice0,
+            "unexpected cumulative price 0"
+        );
+        assertEq(
+            pair.price1CumulativeLast(),
+            expectedPrice1,
+            "unexpected cumulative price 1"
+        );
+    }
+
+    // 256
+    function calculateCurrentPrice()
+        internal
+        view
+        returns(uint256 price0,uint256 price1)
+    {
+        (uint112 reserve0, uint112 reserve1, ) = pair.getReserves();
+        price0 = reserve0 > 0
+            ? (reserve1 * uint256(UQ112x112.Q112)) / reserve0
+            : 0;
+        price1 = reserve1 > 0
+            ? (reserve0 * uint256(UQ112x112.Q112)) / reserve1
+            : 0;
+    }
+
+    function assertBlockTimestampLast(uint32 expected) internal {
+        (, , uint32 blockTimestampLast) = pair.getReserves();
+
+        assertEq(blockTimestampLast, expected, "unexpected blockTimestampLast");
+    }
+
+    function testMintFromScratch() public {
+        token0.transfer(address(pair),1 ether);
+        token1.transfer(address(pair),1 ether);
+        
+        pair.mint(address(this));
+
+        assertEq(pair.balanceOf(address(this)),1 ether-1000);
+        assertReserves(1 ether,1 ether);
+        assertEq(pair.totalSupply(),1 ether);
+    }
+
+    function testMintWhenTheresLiquidity() public{
+        token0.transfer(address(pair),1 ether);
+        token1.transfer(address(pair),1 ether);
+        pair.mint(address(this));
+
+        token0.transfer(address(pair),2 ether);
+        token1.transfer(address(pair),2 ether);
+        pair.mint(address(this));
+
+        assertEq(pair.balanceOf(address(this)),3 ether -1000);
+        assertEq(pair.totalSupply(),3 ether);
+        assertReserves(3 ether,3 ether);
+    }
+
+    function testMintUnbalanced() public {
+        token0.transfer(address(pair), 1 ether);
+        token1.transfer(address(pair), 1 ether);
+
+        pair.mint(address(this)); // + 1 LP
+        assertEq(pair.balanceOf(address(this)), 1 ether - 1000);
+        assertReserves(1 ether, 1 ether);
+
+        token0.transfer(address(pair), 2 ether);
+        token1.transfer(address(pair), 1 ether);
+
+        pair.mint(address(this)); // + 1 LP
+        assertEq(pair.balanceOf(address(this)), 2 ether - 1000); // 发放LP-token时按照小比例发放，等于不鼓励操纵代币价格
+        assertReserves(3 ether, 2 ether); // token的数量照单全收
+    }
+
+    function testMintLiquidityUnderflow() public {
+        vm.expectRevert(encodeError("Panic(uint256)", 0x11));
+        pair.mint(address(this));
+    }
+
+    function testMintZeroLiquidity() public {
+        token0.transfer(address(pair),1000);
+        token1.transfer(address(pair),1000);
+        vm.expectRevert(encodeError("InsufficientLiquidityMinted()"));
+        pair.mint(address(this));
+    }
+
+    function testBurn() public {
+        token0.transfer(address(pair), 1 ether);
+        token1.transfer(address(pair), 1 ether);
+
+        pair.mint(address(this));
+
+        uint256 liquidity = pair.balanceOf(address(this));
+        pair.transfer(address(pair), liquidity);
+        pair.burn(address(this));
+
+        assertEq(pair.balanceOf(address(this)), 0);
+        assertReserves(1000, 1000);
+        assertEq(pair.totalSupply(), 1000);
+        assertEq(token0.balanceOf(address(this)), 10 ether - 1000);
+        assertEq(token1.balanceOf(address(this)), 10 ether - 1000);
+    }
+
+    function testBurnUnbalanced() public {
+        token0.transfer(address(pair), 1 ether);
+        token1.transfer(address(pair), 1 ether);
+
+        pair.mint(address(this));
+
+        token0.transfer(address(pair), 2 ether);
+        token1.transfer(address(pair), 1 ether);
+
+        pair.mint(address(this)); // + 1 LP
+
+        uint256 liquidity = pair.balanceOf(address(this));
+        pair.transfer(address(pair), liquidity);
+        pair.burn(address(this));
+
+        assertEq(pair.balanceOf(address(this)), 0);
+        assertReserves(1500, 1000);
+        assertEq(pair.totalSupply(), 1000);
+        assertEq(token0.balanceOf(address(this)), 10 ether - 1500);
+        assertEq(token1.balanceOf(address(this)), 10 ether - 1000);
+    }
+
+    function testBurnUnbalancedDifferentUsers() public {
+        testUser.provideLiquidity(
+            address(pair),
+            address(token0),
+            address(token1),
+            1 ether,
+            1 ether
+        );
+
+        assertEq(pair.balanceOf(address(this)), 0);
+        assertEq(pair.balanceOf(address(testUser)), 1 ether - 1000);
+        assertEq(pair.totalSupply(), 1 ether);
+
+        token0.transfer(address(pair), 2 ether);
+        token1.transfer(address(pair), 1 ether);
+
+        pair.mint(address(this)); // + 1 LP
+
+        uint256 liquidity = pair.balanceOf(address(this));
+        pair.transfer(address(pair), liquidity);
+        pair.burn(address(this));
+
+        // this user is penalized for providing unbalanced liquidity
+        assertEq(pair.balanceOf(address(this)), 0);
+        assertReserves(1.5 ether, 1 ether);
+        assertEq(pair.totalSupply(), 1 ether);
+        assertEq(token0.balanceOf(address(this)), 10 ether - 0.5 ether);
+        assertEq(token1.balanceOf(address(this)), 10 ether);
+
+        testUser.removeLiquidity(address(pair));
+
+        // testUser receives the amount collected from this user
+        assertEq(pair.balanceOf(address(testUser)), 0); // testUser此时拥有0个LP-token
+
+        // token0和token1都各有1000的流动性是从testUser首次充值的流动性中扣除的
+        // token0多的500也是testUser扣除的
+        assertReserves(1500, 1000); 
+        assertEq(pair.totalSupply(), 1000); // 还有1000wei个LP-token是0地址拥有的
+        assertEq(
+            token0.balanceOf(address(testUser)),
+            10 ether + 0.5 ether - 1500
+        );
+        assertEq(token1.balanceOf(address(testUser)), 10 ether - 1000);
+    }
+
+    function testBurnZeroTotalSupply() public {
+        // 0x12; If you divide or modulo by zero.
+        vm.expectRevert(encodeError("Panic(uint256)", 0x12));
+        pair.burn(address(this));
+    }
+
+    function testBurnZeroLiquidity() public {
+        token0.transfer(address(pair), 1 ether);
+        token1.transfer(address(pair), 1 ether);
+        pair.mint(address(this));
+
+        vm.prank(address(0xabcdef));
+        vm.expectRevert(encodeError("InsufficientLiquidityBurned()"));
+        pair.burn(address(this));
+    }
+
+    function testReservesPacking() public {
+        token0.transfer(address(pair), 1 ether);
+        token1.transfer(address(pair), 2 ether);
+        pair.mint(address(this));
+
+        bytes32 val = vm.load(address(pair), bytes32(uint256(8)));
+        assertEq(
+            val,
+            hex"000000000000000000001bc16d674ec800000000000000000de0b6b3a7640000"
+        );
+    }
+
+    function testSwapBasicScenario() public {
+        token0.transfer(address(pair), 1 ether);
+        token1.transfer(address(pair), 2 ether);
+        pair.mint(address(this)); // 先给pair提供流动性
+
+        // 这是人工计算出来的、在正常情况下期望换出来的token1的数量
+        uint256 amountOut = 0.181322178776029826 ether; 
+
+        // 提前把token0打给pair合约，想要用token0交换出token1
+        // amountOut是想要换出的token1的数量
+        token0.transfer(address(pair), 0.1 ether);
+        pair.swap(0, amountOut, address(this), ""); // 执行交换
+
+        assertEq(
+            token0.balanceOf(address(this)), // 本合约拥有的token0的数量
+            10 ether - 1 ether - 0.1 ether, // setUp里给本合约搞了10ether个token0
+            "unexpected token0 balance"
+        );
+        assertEq(
+            token1.balanceOf(address(this)),
+            10 ether - 2 ether + amountOut,
+            "unexpected token1 balance"
+        );
+        assertReserves(1 ether + 0.1 ether,uint112(2 ether - amountOut) );
+    }
+
+    function testSwapBasicScenarioReverseDirection() public {
+        token0.transfer(address(pair), 1 ether);
+        token1.transfer(address(pair), 2 ether);
+        pair.mint(address(this));
+
+        token1.transfer(address(pair), 0.2 ether);
+        pair.swap(0.09 ether, 0, address(this), "");
+
+        assertEq(
+            token0.balanceOf(address(this)),
+            10 ether - 1 ether + 0.09 ether,
+            "unexpected token0 balance"
+        );
+        assertEq(
+            token1.balanceOf(address(this)),
+            10 ether - 2 ether - 0.2 ether,
+            "unexpected token1 balance"
+        );
+        assertReserves(1 ether - 0.09 ether, 2 ether + 0.2 ether);
+    }
+
+    function testSwapZeroOut() public {
+        token0.transfer(address(pair),1 ether);
+        token1.transfer(address(pair),1 ether);
+        pair.mint(address(this));
+
+        vm.expectRevert(encodeError("InsufficientOutputAmount()"));
+        pair.swap(0, 0, address(this), "");
+    }
+
+    function testSwapInsufficientLiquidity() public {
+        token0.transfer(address(pair), 1 ether);
+        token1.transfer(address(pair), 2 ether);
+        pair.mint(address(this));
+
+        vm.expectRevert(encodeError("InsufficientLiquidity()"));
+        pair.swap(0, 2.1 ether, address(this), "");
+
+        vm.expectRevert(encodeError("InsufficientLiquidity()"));
+        pair.swap(1.1 ether, 0, address(this), "");
+    }
+
+    // 定价过低也能换出来，因为满足k的条件
+    // 所以要用router对用户进行保护
+     function testSwapUnderpriced() public {
+        token0.transfer(address(pair), 1 ether);
+        token1.transfer(address(pair), 2 ether);
+        pair.mint(address(this));
+
+        token0.transfer(address(pair), 0.1 ether);
+        pair.swap(0, 0.01 ether, address(this), "");
+
+        assertEq(
+            token0.balanceOf(address(this)),
+            10 ether - 1 ether - 0.1 ether,
+            "unexpected token0 balance"
+        );
+        assertEq(
+            token1.balanceOf(address(this)),
+            10 ether - 2 ether + 0.01 ether,
+            "unexpected token1 balance"
+        );
+        assertReserves(1 ether + 0.1 ether, 2 ether - 0.01 ether);
+    }
+
+    // 定价过高无法换出，因为不满足k的条件
+    function testSwapOverpriced() public {
+        token0.transfer(address(pair), 1 ether);
+        token1.transfer(address(pair), 2 ether);
+        pair.mint(address(this));
+
+        token0.transfer(address(pair), 0.1 ether);
+
+        vm.expectRevert(encodeError("InvalidK()"));
+        pair.swap(0, 0.36 ether, address(this), "");
+
+        assertEq(
+            token0.balanceOf(address(this)),
+            10 ether - 1 ether - 0.1 ether,
+            "unexpected token0 balance"
+        );
+        assertEq(
+            token1.balanceOf(address(this)),
+            10 ether - 2 ether,
+            "unexpected token1 balance"
+        );
+        assertReserves(1 ether, 2 ether);
+    }
+
+    function testSwapUnpaidFee() public {
+        token0.transfer(address(pair), 1 ether);
+        token1.transfer(address(pair), 2 ether);
+        pair.mint(address(this));
+
+        token0.transfer(address(pair), 0.1 ether);
+
+        vm.expectRevert(encodeError("InvalidK()"));
+        pair.swap(0, 0.181322178776029827 ether, address(this), "");
+    }
+
+    function testFlashloan() public {
+        
+    }
+
+}
+
+// 合约闪电贷用户
+contract Flashloaner {
+    error InsufficientFlashLoanAmount();
+    uint256 expectedLoanAmount;
     
-    
+    function flashloan(
+        address pairAddress,
+        uint256 amount0Out,
+        uint256 amount1Out,
+        address tokenAddress
+    ) public {
+        if (amount0Out > 0) {
+            expectedLoanAmount = amount0Out;
+        }
+        if (amount1Out > 0) {
+            expectedLoanAmount = amount1Out;
+        }
+
+        NuniswapV2Pair(pairAddress).swap(
+            amount0Out,
+            amount1Out,
+            address(this),
+            abi.encode(tokenAddress)
+        );
+    }
+
+    // pair.swap把相应数量的token打给本合约之后回调该函数
+    // 该函数在拿到币之后疯狂操作最后把借来的币+利息打回给pair
+    function nuniswapV2Call(
+        address sender,
+        uint256 amount0Out,
+        uint256 amount1Out,
+        bytes calldata data
+    ) public {
+        address tokenAddress = abi.decode(data,(address));
+        uint256 balance=ERC20(tokenAddress).balanceOf(address(this));
+        if ( balance < expectedLoanAmount )
+            revert InsufficientFlashLoanAmount();
+
+        // msg.sender是pair合约    
+        ERC20(tokenAddress).transfer(msg.sender,balance);
+        // msg.sender是pair合约的地址
+        // 把balance打回给pair合约。balance的组成部分应该是flashloanFee+借来的币的数量
+        // 虽然这里是把所有的余额都给打回去了
+    }
 }
