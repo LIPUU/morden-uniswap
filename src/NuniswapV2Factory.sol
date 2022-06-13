@@ -4,7 +4,7 @@ pragma solidity ^0.8.14;
 import "./NuniswapV2Pair.sol";
 import "./interfaces/INuniswapV2Pair.sol";
 
-contract NnuiswapV2Factory{
+contract NuniswapV2Factory{
     error IdenticalAddresses();
     error ZeroAddress();
     error PairExists();

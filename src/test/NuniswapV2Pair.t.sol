@@ -42,7 +42,7 @@ contract NuniswapV2PairTest is Test {
         token0 = new ERC20Mintable("Token A", "A");
         token1 = new ERC20Mintable("Token B", "B");
         // 部署了一个工厂合约
-        NnuiswapV2Factory factory=new NnuiswapV2Factory();
+        NuniswapV2Factory factory=new NuniswapV2Factory();
         address pairAddress = factory.createPair(
             address(token0),
             address(token1)

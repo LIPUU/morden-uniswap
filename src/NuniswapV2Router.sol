@@ -122,6 +122,7 @@ contract NuniswapV2Router{
             if (amountBOptimal <= amountBDesired) {
                 // amountBMin是用户期望的添加的token的最小量，小于该量用户认为是不可接受的。
                 if (amountBOptimal <= amountBMin)  
+                // 注意此处有等号
                     revert InsufficientBAmount();
                 (amountA, amountB) = (amountADesired, amountBOptimal);
             } else {
